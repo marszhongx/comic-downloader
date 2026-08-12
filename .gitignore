@@ -1,0 +1,5 @@
+downloads/
+__pycache__/
+catalog.csv
+creds.json
+.DS_Store
