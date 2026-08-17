@@ -33,7 +33,13 @@
       <template x-for="c in filtered" :key="c.id">
         <div class="col" style="cursor:pointer" @click="open(c.id)">
           <div class="card h-100 border-secondary">
-            <img :src="coverUrl(c)" loading="lazy" width="300" height="400" class="w-100 object-fit-cover bg-dark" alt="" style="aspect-ratio:3/4">
+            <div class="position-relative">
+              <img :src="coverUrl(c)" loading="lazy" width="300" height="400" class="w-100 object-fit-cover bg-dark" alt="" style="aspect-ratio:3/4">
+              <button class="btn btn-sm btn-danger position-absolute top-0 end-0 m-1"
+                      style="z-index:5"
+                      title="删除本子"
+                      @click.stop="remove(c)">🗑</button>
+            </div>
             <div class="card-body p-2 d-flex flex-column">
               <div class="card-title small mb-0 text-truncate" x-text="c.title"></div>
               <div class="d-flex justify-content-between text-body-secondary small mt-auto pt-1">
@@ -104,6 +110,14 @@ document.addEventListener('alpine:init',()=>{
     },
     coverUrl(c){return c.cover?encodeURI(c.cover):'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=='},
     badge(c){return c.chapterCount+'章'},
+    async remove(c){
+      if(!confirm(`确定删除「${c.title}」吗？删除后重新下载时会跳过。`))return;
+      try{
+        await fetch('/api/comic/'+encodeURIComponent(c.id),{method:'DELETE'});
+        this.LIB=this.LIB.filter(x=>x.id!==c.id);
+        this.totalPages=this.LIB.reduce((a,x)=>a+x.totalPages,0);
+      }catch(e){alert('删除失败: '+e)}
+    },
     async open(id){
       try{const d=await api('/api/comic/'+encodeURIComponent(id));this.$store.app.page='reader';this.$store.app.comic=d.comic}
       catch(e){}
