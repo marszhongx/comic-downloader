@@ -60,6 +60,7 @@ DEFAULT_UA = (
     "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 )
 CREDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creds.json")
+DELETED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deleted.json")
 META_FILE = "meta.json"
 
 PAGE_WORKERS = 10          # 页面下载并发
@@ -81,6 +82,18 @@ def get_ssl_ctx():
         ctx.verify_mode = ssl.CERT_NONE
         _SSL_CTX = ctx
     return _SSL_CTX
+
+
+def load_deleted():
+    """读取已删除漫画 id 集合(删除后重新下载应跳过)."""
+    if not os.path.exists(DELETED_FILE):
+        return set()
+    try:
+        with open(DELETED_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return set(str(x) for x in (data or []))
+    except Exception:
+        return set()
 
 
 def log(msg):
@@ -570,6 +583,9 @@ def main():
         return
 
     if args.comic:
+        if str(args.comic) in load_deleted():
+            log(f"[-] 漫画 {args.comic} 已在删除记录中, 跳过下载")
+            return
         s.download_comic(args.comic, args.chapters)
         return
 
@@ -578,6 +594,12 @@ def main():
         ids = sorted(comics.keys(), reverse=True)  # 从最大 id 开始, 逐步逼近 1
         if args.limit:
             ids = ids[: args.limit]
+
+        deleted = load_deleted()
+        kept = [cid for cid in ids if str(cid) not in deleted]
+        if len(kept) != len(ids):
+            log(f"[-] 跳过已删除的漫画 {len(ids) - len(kept)} 部")
+        ids = kept
 
         out_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
         os.makedirs(long_path(out_root), exist_ok=True)

@@ -13,18 +13,40 @@ API:
     GET /             -> 跳转到 /web/index.html
     GET /api/comics   -> 漫画列表
     GET /api/comic/id -> 漫画详情
+    DELETE /api/comic/id -> 删除漫画并记录 id(重新下载时跳过)
 
 静态文件:
     /web/...         -> 前端页面
     /downloads/...   -> 漫画图片
 
+已删除漫画 id 记录在 deleted.json, unlock.py 下载时会跳过
+
 打开 http://127.0.0.1:8080/ 即可阅读
 """
-import json, os, re, sys
+import json, os, re, shutil, sys
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DOWNLOADS = os.path.join(HERE, "downloads")
+DELETED_FILE = os.path.join(HERE, "deleted.json")
+
+
+def load_deleted():
+    """deleted.json → set of 已删除的漫画 id"""
+    if not os.path.exists(DELETED_FILE):
+        return set()
+    try:
+        with open(DELETED_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return set(str(x) for x in (data or []))
+    except Exception:
+        return set()
+
+
+def save_deleted(ids):
+    """把已删除漫画 id 集合写回 deleted.json"""
+    with open(DELETED_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(ids), f, ensure_ascii=False, indent=1)
 
 
 def load_catalog():
@@ -114,6 +136,28 @@ def comic_detail(cid):
 
 class Handler(SimpleHTTPRequestHandler):
     _COMICS = scan_comics()
+
+    def refresh(self):
+        """重新扫描漫画列表"""
+        self._COMICS = scan_comics()
+
+    def do_DELETE(self):
+        path = self.path.rstrip("/")
+        m = re.match(r"^/api/comic/([^/]+)$", path)
+        if not m:
+            self._json({"ok": False, "error": "bad request"}, 400)
+            return
+        cid = urllib.parse.unquote(m.group(1))
+        d = os.path.join(DOWNLOADS, cid)
+        # 记录 id(即使目录不存在也记录, 保证重下时跳过)
+        deleted = load_deleted()
+        deleted.add(cid)
+        save_deleted(deleted)
+        # 删除本地目录(含整个漫画)
+        if os.path.isdir(d):
+            shutil.rmtree(d, ignore_errors=True)
+        self.refresh()
+        self._json({"ok": True, "id": cid, "deleted": sorted(deleted)})
 
     def do_GET(self):
         path = self.path.rstrip("/") or "/"
