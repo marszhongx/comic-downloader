@@ -35,17 +35,18 @@
           <div class="card h-100 border-secondary">
             <div class="position-relative">
               <img :src="coverUrl(c)" loading="lazy" width="300" height="400" class="w-100 object-fit-cover bg-dark" alt="" style="aspect-ratio:3/4">
+              <div class="position-absolute bottom-0 start-0 end-0 p-2 text-white"
+                   style="background:rgba(0,0,0,.72)">
+                <div class="small fw-semibold text-truncate" x-text="c.title"></div>
+                <div class="d-flex justify-content-between small text-white-50 pt-1">
+                  <span x-text="badge(c)"></span>
+                  <span x-text="c.totalPages+'P'"></span>
+                </div>
+              </div>
               <button class="btn btn-sm btn-danger position-absolute top-0 end-0 m-1"
                       style="z-index:5"
                       title="删除本子"
                       @click.stop="remove(c)">🗑</button>
-            </div>
-            <div class="card-body p-2 d-flex flex-column">
-              <div class="card-title small mb-0 text-truncate" x-text="c.title"></div>
-              <div class="d-flex justify-content-between text-body-secondary small mt-auto pt-1">
-                <span x-text="badge(c)"></span>
-                <span x-text="c.totalPages+'P'"></span>
-              </div>
             </div>
           </div>
         </div>
