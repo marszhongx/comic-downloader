@@ -27,16 +27,17 @@ CTF 漫画站解锁 / 批量下载工具
 断点续传
 --------
   --all 模式从最大 id 开始下载, 不依赖任何进度文件.
-  每部漫画是否已完整下载由 downloads/meta.json(每章页数缓存) + 文件系统
+  每部漫画是否已完整下载由 downloads/{id}/meta.json(每章页数缓存) + 文件系统
   (每章 pages/ 下所需 jpg 是否齐全) 共同判断: 完整则自动跳过, 不完整则补齐缺失.
   中断后重新运行会自动跳过已完整下载的漫画.
+  已删除的漫画 id 记录在 deleted.json, 会被跳过.
 
 输出
 ----
   downloads/{comicId}/{NN}_{title}/
       pages/0001.jpg ...                           原始切片 JPEG
       chapter.pdf                                  (可选, 每图一页)
-  downloads/meta.json                             每章页数/状态缓存
+  downloads/{comicId}/meta.json                    本漫画元数据: {"name": 标题, "chapters": {章号: 页数}}
 """
 
 import argparse
@@ -94,6 +95,47 @@ def load_deleted():
         return set(str(x) for x in (data or []))
     except Exception:
         return set()
+
+
+# ---------- 每本漫画的本地元数据 downloads/{id}/meta.json ----------
+def comic_meta_path(out_root, comic_id):
+    return os.path.join(out_root, str(comic_id), META_FILE)
+
+
+def load_comic_meta(out_root, comic_id):
+    """读取单部漫画的 meta.json -> {"name": 标题, "chapters": {章号: 页数}}.
+
+    兼容旧的全局 downloads/meta.json: 若本漫画无 meta.json 而全局文件存在,
+    则从中抽取该漫画的页数记录作为初始值(不修改全局文件).
+    """
+    data = {}
+    p = comic_meta_path(out_root, comic_id)
+    if os.path.exists(long_path(p)):
+        try:
+            data = json.load(open(long_path(p)))
+        except Exception:
+            data = {}
+    chapters = data.get("chapters")
+    if not isinstance(chapters, dict):
+        chapters = {}
+        legacy = os.path.join(out_root, META_FILE)
+        if os.path.exists(legacy):
+            try:
+                g = json.load(open(legacy))
+                prefix = f"{comic_id}/"
+                chapters = {k[len(prefix):]: v for k, v in g.items()
+                            if isinstance(k, str) and k.startswith(prefix)}
+            except Exception:
+                chapters = {}
+    return {"name": data.get("name", ""), "chapters": chapters}
+
+
+def save_comic_meta(out_root, comic_id, name, chapters):
+    """写入单部漫画的 meta.json (名称 + 每章页数)."""
+    data = {"name": name, "chapters": {str(k): v for k, v in chapters.items()}}
+    p = comic_meta_path(out_root, comic_id)
+    os.makedirs(long_path(os.path.dirname(p)), exist_ok=True)
+    json.dump(data, open(long_path(p), "w"), ensure_ascii=False, indent=1)
 
 
 def log(msg):
@@ -266,10 +308,11 @@ class Session:
     def chapter_count(self, comic_id, chapter, cdn, meta, force=False):
         """返回本章页数. 免费章用 PATCH 接口; 付费章对 CDN 探测.
 
-        force=True 时忽略 meta 缓存强制刷新(用于下载前判断).
+        meta 为本漫画 chapters 字典 {章号: 页数}.
+        force=True 时忽略缓存强制刷新(用于下载前判断).
         已有旧页数时走增量探测: 页数未变一步返回, 避免全量二分拖慢跳过判断.
         """
-        key = f"{comic_id}/{chapter}"
+        key = str(chapter)
         if not force and key in meta:
             return meta[key]
         old = meta.get(key)
@@ -437,10 +480,8 @@ class Session:
         log(f"[*] 漫画 {comic_id} <<{info['title']}>> 共 {len(info['chapters'])} 话")
         out_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
         os.makedirs(long_path(out_root), exist_ok=True)
-        meta_file = os.path.join(out_root, META_FILE)
-        meta = {}
-        if os.path.exists(meta_file):
-            meta = json.load(open(meta_file))
+        cm = load_comic_meta(out_root, comic_id)
+        meta = cm["chapters"]
 
         chapters = info["chapters"]
         if chapter_range:
@@ -452,7 +493,7 @@ class Session:
         counts = self.count_comic_chapters(comic_id, chapters, cdn, meta)
         for num, cnt in counts.items():
             log(f"    [*] 第{num}话: {cnt} 页")
-        json.dump(meta, open(meta_file, "w"), ensure_ascii=False, indent=1)
+        save_comic_meta(out_root, comic_id, info["title"], meta)
 
         # 阶段2: 并发下载所有页面 (逐章判断缺失量, 完整章节直接跳过)
         tasks = []
@@ -535,17 +576,17 @@ class Session:
         return ok, fail
 
 
-def is_comic_complete(out_root, comic_id, chapters, meta):
+def is_comic_complete(out_root, comic_id, chapters, counts):
     """判断一部漫画是否已完整下载 (不依赖进度文件).
 
-    依据 downloads/meta.json 记录的每章页数 + 文件系统实际文件:
+    依据本漫画 meta.json 记录的每章页数 + 文件系统实际文件:
     每章 pages/ 下 1..N 的全部 jpg 均存在且非空即视为完整.
     """
     top = os.path.join(out_root, str(comic_id))
     if not os.path.isdir(long_path(top)):
         return False
     for c in chapters:
-        n = meta.get(f"{comic_id}/{c['number']}")
+        n = counts.get(str(c["number"]))
         if not n:
             return False  # 章节页数未知 -> 未完整
         safe_title = safe_name(c["title"] or f"第{c['number']}话")
@@ -603,13 +644,11 @@ def main():
 
         out_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
         os.makedirs(long_path(out_root), exist_ok=True)
-        meta_file = os.path.join(out_root, META_FILE)
-        meta = {}
-        if os.path.exists(meta_file):
-            meta = json.load(open(meta_file))
+        # 旧的全局 downloads/meta.json 仅作迁移来源, 之后清理
+        legacy_meta = os.path.join(out_root, META_FILE)
         cdn = s.image_host()
 
-        # 依据 meta(每章页数) + fs(每章 jpg 是否齐全) 判断是否已完整下载, 不再依赖进度文件.
+        # 依据本漫画 meta.json(每章页数) + fs(每章 jpg 是否齐全) 判断是否已完整下载.
         # 提速: 无本地目录的漫画必然不完整, 无需预判(真正下载时才取章节信息);
         # 只对已下载过的漫画做 comic_info + 页数强制刷新 + 完整性判断, 且并发执行.
         def check_local(cid):
@@ -618,8 +657,11 @@ def main():
             except Exception as e:
                 log(f"[!] 漫画 {cid} 详情获取失败, 仍尝试下载: {e}")
                 return cid, None, False
-            s.count_comic_chapters(cid, info["chapters"], cdn, meta, force=True)
-            return cid, info, is_comic_complete(out_root, cid, info["chapters"], meta)
+            cm = load_comic_meta(out_root, cid)
+            counts = s.count_comic_chapters(cid, info["chapters"], cdn, cm["chapters"], force=True)
+            # 顺便补齐单本 meta.json 的名称与页数
+            save_comic_meta(out_root, cid, info["title"], cm["chapters"])
+            return cid, info, is_comic_complete(out_root, cid, info["chapters"], counts)
 
         local_ids = [
             cid for cid in ids
@@ -638,7 +680,9 @@ def main():
                 else:
                     local_todo[cid] = info
         todo += [(cid, local_todo[cid]) for cid in sorted(local_todo, reverse=True)]
-        json.dump(meta, open(meta_file, "w"), ensure_ascii=False, indent=1)
+        if os.path.exists(legacy_meta):
+            os.remove(legacy_meta)
+            log(f"[-] 旧的全局 meta.json 已迁移到各漫画目录, 已删除")
 
         log(f"[*] 目录共 {len(ids)} 部: 已完整下载跳过 {skipped}, 本次下载 {len(todo)}")
 

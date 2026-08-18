@@ -7,7 +7,8 @@
 
 目录结构:
     downloads/{comic_id}/{NN}_{第N话}/pages/{0001.jpg,...}
-    catalog.csv : id,title
+    downloads/{comic_id}/meta.json : {"name": 标题, "chapters": {章号: 页数}}
+    catalog.csv : id,title  (旧数据回退用, 非必需)
 
 API:
     GET /             -> 跳转到 /web/index.html
@@ -50,7 +51,7 @@ def save_deleted(ids):
 
 
 def load_catalog():
-    """catalog.csv → {id: title}"""
+    """catalog.csv → {id: title} (旧数据回退用)"""
     path = os.path.join(HERE, "catalog.csv")
     if not os.path.exists(path):
         return {}
@@ -64,6 +65,20 @@ def load_catalog():
             i = line.find(",")
             catalog[line[:i]] = line[i + 1:]
     return catalog
+
+
+def comic_title(cid, catalog):
+    """漫画标题: 优先本漫画 meta.json 的 name, 再回退 catalog.csv, 最后用 id"""
+    p = os.path.join(DOWNLOADS, cid, "meta.json")
+    if os.path.exists(p):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                name = json.load(f).get("name")
+            if name:
+                return name
+        except Exception:
+            pass
+    return catalog.get(cid, cid)
 
 
 def scan_comics():
@@ -97,7 +112,7 @@ def scan_comics():
                              if f.lower().endswith((".jpg",".jpeg",".png",".webp",".gif"))])
         comics.append({
             "id": cid,
-            "title": catalog.get(cid, cid),
+            "title": comic_title(cid, catalog),
             "cover": cover,
             "chapterCount": len(chapters),
             "totalPages": total,
@@ -128,7 +143,7 @@ def comic_detail(cid):
     catalog = load_catalog()
     return {
         "id": cid,
-        "title": catalog.get(cid, cid),
+        "title": comic_title(cid, catalog),
         "chapters": chapters,
         "chapterCount": len(chapters),
     }
