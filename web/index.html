@@ -29,7 +29,7 @@
         <div>没有找到匹配的漫画</div>
       </div>
     </template>
-    <div class="row row-cols-2 row-cols-sm-3 row-cols-md-4 row-cols-lg-5 row-cols-xl-6 g-3">
+    <div class="row row-cols-1 row-cols-sm-2 row-cols-md-3 row-cols-lg-4 g-3">
       <template x-for="c in filtered" :key="c.id">
         <div class="col" style="cursor:pointer" @click="open(c.id)">
           <div class="card h-100 border-secondary">
@@ -37,7 +37,7 @@
               <img :src="coverUrl(c)" loading="lazy" width="300" height="400" class="w-100 object-fit-cover bg-dark" alt="" style="aspect-ratio:3/4">
               <div class="position-absolute bottom-0 start-0 end-0 p-2 text-white"
                    style="background:rgba(0,0,0,.72)">
-                <div class="small fw-semibold text-truncate" x-text="c.title"></div>
+                <div class="fw-semibold" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden" x-text="c.title"></div>
                 <div class="d-flex justify-content-between small text-white-50 pt-1">
                   <span x-text="badge(c)"></span>
                   <span x-text="c.totalPages+'P'"></span>
