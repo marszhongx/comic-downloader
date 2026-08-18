@@ -114,10 +114,12 @@ document.addEventListener('alpine:init',()=>{
     async remove(c){
       if(!confirm(`确定删除「${c.title}」吗？删除后重新下载时会跳过。`))return;
       try{
-        await fetch('/api/comic/'+encodeURIComponent(c.id),{method:'DELETE'});
+        const r=await fetch('/api/comic/'+encodeURIComponent(c.id),{method:'DELETE'});
+        const d=await r.json();
+        if(!r.ok||!d.ok)throw new Error(d.error||`HTTP ${r.status}`);
         this.LIB=this.LIB.filter(x=>x.id!==c.id);
         this.totalPages=this.LIB.reduce((a,x)=>a+x.totalPages,0);
-      }catch(e){alert('删除失败: '+e)}
+      }catch(e){alert('删除失败: '+e.message)}
     },
     async open(id){
       try{const d=await api('/api/comic/'+encodeURIComponent(id));this.$store.app.page='reader';this.$store.app.comic=d.comic}

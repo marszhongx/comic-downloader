@@ -23,7 +23,7 @@ API:
 
 打开 http://127.0.0.1:8080/ 即可阅读
 """
-import json, os, re, shutil, sys
+import json, os, re, shutil, sys, urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -130,29 +130,32 @@ def comic_detail(cid):
 
 
 class Handler(SimpleHTTPRequestHandler):
-    _COMICS = scan_comics()
-
-    def refresh(self):
-        """重新扫描漫画列表"""
-        self._COMICS = scan_comics()
-
     def do_DELETE(self):
-        path = self.path.rstrip("/")
+        path = urllib.parse.urlsplit(self.path).path.rstrip("/")
         m = re.match(r"^/api/comic/([^/]+)$", path)
         if not m:
             self._json({"ok": False, "error": "bad request"}, 400)
             return
         cid = urllib.parse.unquote(m.group(1))
+        # id 只能是 downloads 下的单层目录名, 防止路径穿越
+        if not cid or cid in (".", "..") or os.path.basename(cid) != cid:
+            self._json({"ok": False, "error": "invalid id"}, 400)
+            return
         d = os.path.join(DOWNLOADS, cid)
-        # 记录 id(即使目录不存在也记录, 保证重下时跳过)
+        try:
+            if os.path.isdir(d):
+                shutil.rmtree(d)
+            if os.path.exists(d):
+                raise OSError("comic directory still exists after deletion")
+        except OSError as e:
+            self._json({"ok": False, "error": f"delete failed: {e}"}, 500)
+            return
+
+        # 文件确实删除后再记录 id, 保证重新下载时跳过
         deleted = load_deleted()
         deleted.add(cid)
         save_deleted(deleted)
-        # 删除本地目录(含整个漫画)
-        if os.path.isdir(d):
-            shutil.rmtree(d, ignore_errors=True)
-        self.refresh()
-        self._json({"ok": True, "id": cid, "deleted": sorted(deleted)})
+        self._json({"ok": True, "id": cid})
 
     def do_GET(self):
         path = self.path.rstrip("/") or "/"
@@ -164,7 +167,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         if path == "/api/comics":
-            self._json({"ok": True, "comics": self._COMICS})
+            self._json({"ok": True, "comics": scan_comics()})
             return
 
         m = re.match(r"^/api/comic/([^/]+)$", path)
@@ -189,7 +192,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    import argparse, urllib
+    import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--bind", default="127.0.0.1")
