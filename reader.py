@@ -8,7 +8,6 @@
 目录结构:
     downloads/{comic_id}/{NN}_{第N话}/pages/{0001.jpg,...}
     downloads/{comic_id}/meta.json : {"name": 标题, "chapters": {章号: 页数}}
-    catalog.csv : id,title  (旧数据回退用, 非必需)
 
 API:
     GET /             -> 跳转到 /web/index.html
@@ -50,25 +49,8 @@ def save_deleted(ids):
         json.dump(sorted(ids), f, ensure_ascii=False, indent=1)
 
 
-def load_catalog():
-    """catalog.csv → {id: title} (旧数据回退用)"""
-    path = os.path.join(HERE, "catalog.csv")
-    if not os.path.exists(path):
-        return {}
-    catalog = {}
-    with open(path, "r", encoding="utf-8-sig") as f:
-        next(f, None)
-        for line in f:
-            line = line.rstrip("\n")
-            if not line or "," not in line:
-                continue
-            i = line.find(",")
-            catalog[line[:i]] = line[i + 1:]
-    return catalog
-
-
-def comic_title(cid, catalog):
-    """漫画标题: 优先本漫画 meta.json 的 name, 再回退 catalog.csv, 最后用 id"""
+def comic_title(cid):
+    """漫画标题: 读本漫画 meta.json 的 name, 取不到用 id"""
     p = os.path.join(DOWNLOADS, cid, "meta.json")
     if os.path.exists(p):
         try:
@@ -78,12 +60,11 @@ def comic_title(cid, catalog):
                 return name
         except Exception:
             pass
-    return catalog.get(cid, cid)
+    return cid
 
 
 def scan_comics():
     """扫描 downloads 下所有漫画"""
-    catalog = load_catalog()
     comics = []
     if not os.path.isdir(DOWNLOADS):
         return comics
@@ -112,7 +93,7 @@ def scan_comics():
                              if f.lower().endswith((".jpg",".jpeg",".png",".webp",".gif"))])
         comics.append({
             "id": cid,
-            "title": comic_title(cid, catalog),
+            "title": comic_title(cid),
             "cover": cover,
             "chapterCount": len(chapters),
             "totalPages": total,
@@ -140,10 +121,9 @@ def comic_detail(cid):
             "dir": item, "title": title,
             "pages": len(files), "files": files,
         })
-    catalog = load_catalog()
     return {
         "id": cid,
-        "title": comic_title(cid, catalog),
+        "title": comic_title(cid),
         "chapters": chapters,
         "chapterCount": len(chapters),
     }

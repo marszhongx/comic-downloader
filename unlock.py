@@ -103,11 +103,7 @@ def comic_meta_path(out_root, comic_id):
 
 
 def load_comic_meta(out_root, comic_id):
-    """读取单部漫画的 meta.json -> {"name": 标题, "chapters": {章号: 页数}}.
-
-    兼容旧的全局 downloads/meta.json: 若本漫画无 meta.json 而全局文件存在,
-    则从中抽取该漫画的页数记录作为初始值(不修改全局文件).
-    """
+    """读取单部漫画的 meta.json -> {"name": 标题, "chapters": {章号: 页数}}."""
     data = {}
     p = comic_meta_path(out_root, comic_id)
     if os.path.exists(long_path(p)):
@@ -118,15 +114,6 @@ def load_comic_meta(out_root, comic_id):
     chapters = data.get("chapters")
     if not isinstance(chapters, dict):
         chapters = {}
-        legacy = os.path.join(out_root, META_FILE)
-        if os.path.exists(legacy):
-            try:
-                g = json.load(open(legacy))
-                prefix = f"{comic_id}/"
-                chapters = {k[len(prefix):]: v for k, v in g.items()
-                            if isinstance(k, str) and k.startswith(prefix)}
-            except Exception:
-                chapters = {}
     return {"name": data.get("name", ""), "chapters": chapters}
 
 
@@ -644,8 +631,6 @@ def main():
 
         out_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
         os.makedirs(long_path(out_root), exist_ok=True)
-        # 旧的全局 downloads/meta.json 仅作迁移来源, 之后清理
-        legacy_meta = os.path.join(out_root, META_FILE)
         cdn = s.image_host()
 
         # 依据本漫画 meta.json(每章页数) + fs(每章 jpg 是否齐全) 判断是否已完整下载.
@@ -680,9 +665,6 @@ def main():
                 else:
                     local_todo[cid] = info
         todo += [(cid, local_todo[cid]) for cid in sorted(local_todo, reverse=True)]
-        if os.path.exists(legacy_meta):
-            os.remove(legacy_meta)
-            log(f"[-] 旧的全局 meta.json 已迁移到各漫画目录, 已删除")
 
         log(f"[*] 目录共 {len(ids)} 部: 已完整下载跳过 {skipped}, 本次下载 {len(todo)}")
 
