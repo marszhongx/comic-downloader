@@ -156,8 +156,12 @@ def long_path(path):
     return path
 
 
-def http_json(url, method="GET", headers=None, body=None, timeout=30, retries=3):
-    """urllib 封装: 返回解析后的 JSON."""
+def http_json(url, method="GET", headers=None, body=None, timeout=30, retries=6):
+    """urllib 封装: 返回解析后的 JSON.
+
+    服务器偶发 TLS 握手失败(SSLEOFError) / 连接重置, 指数退避重试并打印
+    每次尝试, 避免批处理中途因单次网络故障整体崩溃.
+    """
     hdrs = {"User-Agent": DEFAULT_UA}
     if headers:
         hdrs.update(headers)
@@ -172,9 +176,12 @@ def http_json(url, method="GET", headers=None, body=None, timeout=30, retries=3)
             req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
             with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
                 return json.loads(resp.read().decode())
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
             last = e
-            time.sleep(1.5 * (attempt + 1))
+            if attempt + 1 < retries:
+                wait = 2 ** attempt + random.uniform(0, 1)
+                log(f"    [!] 请求失败({type(e).__name__}: {e}), {wait:.1f}s 后重试 ({attempt + 2}/{retries})")
+                time.sleep(wait)
     raise last
 
 
@@ -226,7 +233,7 @@ class Session:
         log(f"[*] 新账号注册并登录成功 (token 已缓存到 {CREDS_FILE})")
 
     # ---------- API ----------
-    def api(self, path, method="GET", params=None, body=None, retries=3):
+    def api(self, path, method="GET", params=None, body=None, retries=6):
         url = API_HOST + path
         if params:
             url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
@@ -668,9 +675,16 @@ def main():
 
         log(f"[*] 目录共 {len(ids)} 部: 已完整下载跳过 {skipped}, 本次下载 {len(todo)}")
 
+        failed = []
         for i, (cid, info) in enumerate(todo, 1):
             log(f"[*] 批量进度 {i}/{len(todo)}: 漫画 id={cid}")
-            s.download_comic(cid, info=info)
+            try:
+                s.download_comic(cid, info=info)
+            except Exception as e:
+                failed.append(cid)
+                log(f"[!] 漫画 {cid} 下载失败(跳过, 稍后可重跑补齐): {type(e).__name__}: {e}")
+        if failed:
+            log(f"[-] {len(failed)} 部下载失败: {failed}")
         log("[+] 批量下载结束")
         return
 
