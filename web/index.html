@@ -136,7 +136,13 @@ document.addEventListener('alpine:init',()=>{
     },
 
     init(){this.$watch('$store.app.comic',c=>{if(c)this.$nextTick(()=>this.initReader())})},
-    initReader(){if(!this.comic)return;this.chapIdx=0;this.page=0;this.$nextTick(()=>this.loadChapter())},
+    initReader(){
+      if(!this.comic)return;
+      this.chapIdx=0;this.page=0;this.pages=[];
+      window.scrollTo(0,0);
+      if(this.$refs.body)this.$refs.body.scrollTop=0;
+      this.$nextTick(()=>this.loadChapter());
+    },
 
     loadChapter(){
       if(!this.comic)return;
