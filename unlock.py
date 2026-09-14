@@ -102,8 +102,12 @@ def comic_meta_path(out_root, comic_id):
     return os.path.join(out_root, str(comic_id), META_FILE)
 
 
+SKIP_TAGS = {"贫乳", "cosplay"}  # 默认跳过含这些标签的漫画, 可用 --skip-tags 覆盖
+MAX_AGE_DAYS = 365  # 只下载最近 N 天内更新过的漫画, 可用 --max-age-days 覆盖, 0 表示不过滤
+
+
 def load_comic_meta(out_root, comic_id):
-    """读取单部漫画的 meta.json -> {"name": 标题, "chapters": {章号: 页数}}."""
+    """读取单部漫画的 meta.json -> 完整元数据(含 name/author/tags/chapters)."""
     data = {}
     p = comic_meta_path(out_root, comic_id)
     if os.path.exists(long_path(p)):
@@ -114,12 +118,17 @@ def load_comic_meta(out_root, comic_id):
     chapters = data.get("chapters")
     if not isinstance(chapters, dict):
         chapters = {}
-    return {"name": data.get("name", ""), "chapters": chapters}
+    meta = dict(data)
+    meta["name"] = data.get("name", "")
+    meta["chapters"] = chapters
+    return meta
 
 
-def save_comic_meta(out_root, comic_id, name, chapters):
-    """写入单部漫画的 meta.json (名称 + 每章页数)."""
-    data = {"name": name, "chapters": {str(k): v for k, v in chapters.items()}}
+def save_comic_meta(out_root, comic_id, name, chapters, info=None):
+    """写入单部漫画的 meta.json (完整元数据 + 每章页数)."""
+    data = dict(info or {})
+    data["name"] = name
+    data["chapters"] = {str(k): v for k, v in chapters.items()}
     p = comic_meta_path(out_root, comic_id)
     os.makedirs(long_path(os.path.dirname(p)), exist_ok=True)
     json.dump(data, open(long_path(p), "w"), ensure_ascii=False, indent=1)
@@ -285,15 +294,23 @@ class Session:
     def comic_info(self, comic_id):
         resp = self.api(f"/comic/-/{comic_id}")
         d = resp["data"]
-        return {
+        info = {
             "id": comic_id,
             "title": d.get("title", ""),
             "author": d.get("author", ""),
+            "desc": d.get("desc", ""),
+            "channel": d.get("channel"),
+            "isEnded": d.get("isEnded"),
+            "clickCount": d.get("clickCount"),
+            "favoriteCount": d.get("favoriteCount"),
+            "updatedTime": d.get("updatedTime"),
+            "tags": [t.get("name", "") for t in d.get("tags", []) if isinstance(t, dict)],
             "chapters": [
                 {"number": c["number"], "title": c.get("title", ""), "point": c.get("point", 0)}
                 for c in d.get("chapters", [])
             ],
         }
+        return info
 
     def image_host(self):
         resp = self.api("/config/pic_url")
@@ -437,6 +454,13 @@ class Session:
         return self._binary_in(cdn, comic_id, chapter, lo, hi)
 
     # ---------- 下载 ----------
+    def blocked_tags(self, info, skip_tags=None):
+        """返回 info 命中的跳过标签列表(空列表表示不跳过)."""
+        tags = set(skip_tags if skip_tags is not None else SKIP_TAGS)
+        if not tags:
+            return []
+        return sorted(tags & {t.casefold() for t in info.get("tags", [])})
+
     def download_page(self, cdn, comic_id, chapter, page, out_path):
         lp_out = long_path(out_path)
         if os.path.exists(lp_out) and os.path.getsize(lp_out) > 0:
@@ -467,9 +491,19 @@ class Session:
                     time.sleep(1.5 * (attempt + 1))
         return False
 
-    def download_comic(self, comic_id, chapter_range=None, info=None):
+    def download_comic(self, comic_id, chapter_range=None, info=None, skip_tags=None):
         if info is None:
             info = self.comic_info(comic_id)
+        hit = self.blocked_tags(info, skip_tags)
+        if hit:
+            log(f"[-] 漫画 {comic_id} <<{info['title']}>> 含跳过标签 {hit}, 跳过下载")
+            return -1, 0
+        updated = info.get("updatedTime")
+        if MAX_AGE_DAYS and isinstance(updated, (int, float)) and updated > 0:
+            age_days = (time.time() - updated) / 86400
+            if age_days > MAX_AGE_DAYS:
+                log(f"[-] 漫画 {comic_id} <<{info['title']}>> 更新于 {age_days:.0f} 天前 (> {MAX_AGE_DAYS} 天), 跳过下载")
+                return -1, 0
         cdn = self.image_host()
         log(f"[*] 漫画 {comic_id} <<{info['title']}>> 共 {len(info['chapters'])} 话")
         out_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
@@ -487,7 +521,8 @@ class Session:
         counts = self.count_comic_chapters(comic_id, chapters, cdn, meta)
         for num, cnt in counts.items():
             log(f"    [*] 第{num}话: {cnt} 页")
-        save_comic_meta(out_root, comic_id, info["title"], meta)
+        save_comic_meta(out_root, comic_id, info["title"], meta,
+                        info={k: v for k, v in info.items() if k not in ("id", "chapters")})
 
         # 阶段2: 并发下载所有页面 (逐章判断缺失量, 完整章节直接跳过)
         tasks = []
@@ -601,7 +636,19 @@ def main():
     ap.add_argument("--list", action="store_true", help="枚举全站漫画目录")
     ap.add_argument("--all", action="store_true", help="下载全站漫画(id 从大到小)")
     ap.add_argument("--limit", type=int, default=0, help="--all 时只下载 id 最大的前 N 部(测试用)")
+    ap.add_argument("--skip-tags", default="", help="跳过含这些标签的漫画(逗号分隔), 默认: " + ",".join(sorted(SKIP_TAGS)))
+    ap.add_argument("--max-age-days", type=int, default=365, help="只下载最近 N 天内更新过的漫画, 超过则跳过; 0 表示不过滤 (默认 365)")
+    ap.add_argument("--no-skip", action="store_true", help="禁用标签过滤, 下载全部")
     args = ap.parse_args()
+
+    if args.no_skip:
+        skip_tags = set()
+    else:
+        skip_tags = {t.strip().casefold() for t in args.skip_tags.split(",") if t.strip()} or SKIP_TAGS
+    global MAX_AGE_DAYS
+    MAX_AGE_DAYS = args.max_age_days
+    if skip_tags:
+        log(f"[*] 标签过滤已启用, 跳过: {sorted(skip_tags)}")
 
     s = Session()
     s.ensure_login()
@@ -621,7 +668,7 @@ def main():
         if str(args.comic) in load_deleted():
             log(f"[-] 漫画 {args.comic} 已在删除记录中, 跳过下载")
             return
-        s.download_comic(args.comic, args.chapters)
+        s.download_comic(args.comic, args.chapters, skip_tags=skip_tags)
         return
 
     if args.all:
@@ -650,9 +697,12 @@ def main():
                 log(f"[!] 漫画 {cid} 详情获取失败, 仍尝试下载: {e}")
                 return cid, None, False
             cm = load_comic_meta(out_root, cid)
+            if s.blocked_tags(info, skip_tags):
+                return cid, info, None  # 命中跳过标签
             counts = s.count_comic_chapters(cid, info["chapters"], cdn, cm["chapters"], force=True)
-            # 顺便补齐单本 meta.json 的名称与页数
-            save_comic_meta(out_root, cid, info["title"], cm["chapters"])
+            # 顺便补齐单本 meta.json 的完整元数据与页数
+            save_comic_meta(out_root, cid, info["title"], cm["chapters"],
+                            info={k: v for k, v in info.items() if k not in ("id", "chapters")})
             return cid, info, is_comic_complete(out_root, cid, info["chapters"], counts)
 
         local_ids = [
@@ -666,7 +716,10 @@ def main():
             futs = {ex.submit(check_local, cid): cid for cid in local_ids}
             for fut in cf.as_completed(futs):
                 cid, info, complete = fut.result()
-                if complete:
+                if complete is None:
+                    skipped += 1
+                    log(f"    [-] {cid} <<{info['title']}>> 含跳过标签, 跳过")
+                elif complete:
                     skipped += 1
                     log(f"    [-] {cid} <<{info['title']}>> 已完整下载, 跳过")
                 else:
