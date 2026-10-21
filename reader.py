@@ -23,12 +23,14 @@ API:
 
 打开 http://127.0.0.1:8080/ 即可阅读
 """
-import json, os, re, shutil, sys, urllib.parse
+import hashlib
+import json, os, re, shutil, sys, unicodedata, urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DOWNLOADS = os.path.join(HERE, "downloads")
 DELETED_FILE = os.path.join(HERE, "deleted.json")
+SOURCE_COMIC_URL = "https://bz2vraf.live/comic?id={comic_id}"  # 原站点(unlock.py 的下载源)详情页
 
 
 def load_deleted():
@@ -63,70 +65,167 @@ def comic_title(cid):
     return cid
 
 
-def scan_comics():
-    """扫描 downloads 下所有漫画"""
-    comics = []
+def chapter_sort_key(name):
+    """按章节号排序，而不是按目录名字典序。
+
+    下载器目录通常是 ``02_第2话``，但旧目录、手工导入的目录可能是
+    ``第10话``、``10_...`` 或只包含普通标题。优先使用目录前缀，
+    再从标题中识别“第 N 话/章/回”，最后使用自然排序。
+    """
+    text = str(name)
+    m = re.match(r"^\s*(\d+)(?:_|-|\s|$)", text)
+    if not m:
+        m = re.search(r"第\s*(\d+(?:\.\d+)?)\s*(?:话|話|章|回)", text, re.I)
+    if m:
+        try:
+            return (0, float(m.group(1)), text.casefold())
+        except ValueError:
+            pass
+    # 没有章节号的标题也采用自然排序，避免“番外10”排在“番外2”前。
+    parts = re.split(r"(\d+(?:\.\d+)?)", text.casefold())
+    natural = tuple(float(x) if re.fullmatch(r"\d+(?:\.\d+)?", x) else x for x in parts)
+    return (1, natural)
+
+
+def chapter_number(name):
+    """从章节目录名中提取可供前端显示/跳转的章节号。"""
+    text = str(name)
+    m = re.match(r"^\s*(\d+(?:\.\d+)?)(?:_|-|\s|$)", text)
+    if not m:
+        m = re.search(r"第\s*(\d+(?:\.\d+)?)\s*(?:话|話|章|回)", text, re.I)
+    return m.group(1) if m else None
+
+
+def chapter_title(name):
+    """去掉下载器使用的数字前缀，同时保留原始章节标题。"""
+    return re.sub(r"^\s*\d+(?:\.\d+)?[_-]", "", name).strip() or name
+
+
+def chapter_dirs(comic_dir):
+    """返回按章节号排列的章节目录，避免 1、10、2 的错误顺序。"""
+    result = []
+    for item in os.listdir(comic_dir):
+        if os.path.isdir(os.path.join(comic_dir, item, "pages")):
+            result.append(item)
+    return sorted(result, key=chapter_sort_key)
+
+
+def series_title(name):
+    """从标题提取系列名，用于合并分卷。"""
+    s = unicodedata.normalize("NFKC", name).strip()
+    # 先去掉“前编/中编”等后缀，再去掉卷号；这样“3 前編”也能识别。
+    s = re.sub(r"\s*(?:前|中|后|後)編\s*$", "", s, flags=re.I)
+    s = re.sub(r"\s*(?:前|中|后|後)篇\s*$", "", s, flags=re.I)
+    s = re.sub(r"\s*(?:[#＃]\s*\d+|第\s*\d+\s*[话話章回]|(?:vol\.?|volume|part)\s*\d+|[。．.]?\s*\d+)\s*$", "", s, flags=re.I)
+    return s.strip(" 。．.") or name
+
+
+def series_id(title):
+    return "series-" + hashlib.sha1(title.encode("utf-8")).hexdigest()[:16]
+
+
+def series_key(name):
+    """按“第 N 话”截断标题，截断前一致才视为同一系列。"""
+    s = unicodedata.normalize("NFKC", name).strip()
+    m = re.search(r"第\s*\d+(?:\.\d+)?\s*[话話章回]", s, re.I)
+    if m:
+        s = s[:m.start()]
+    else:
+        s = series_title(s)
+    s = s.replace(",", "、").replace("，", "、")
+    s = re.sub(r"\s+", "", s)
+    return s.casefold().strip(" 。．.")
+
+
+def local_comics():
+    result = []
     if not os.path.isdir(DOWNLOADS):
-        return comics
+        return result
     for cid in sorted(os.listdir(DOWNLOADS)):
         d = os.path.join(DOWNLOADS, cid)
-        if not os.path.isdir(d):
-            continue
-        chapters = []
-        for item in sorted(os.listdir(d)):
-            pages = os.path.join(d, item, "pages")
-            if os.path.isdir(pages):
-                chapters.append(item)
-        if not chapters:
-            continue
+        if os.path.isdir(d) and chapter_dirs(d):
+            result.append({"id": cid, "title": comic_title(cid), "dir": d})
+    return result
+
+
+def series_groups():
+    """按规范化后的系列名分组，同时保留一个可读的显示标题。"""
+    groups = {}
+    for c in local_comics():
+        key = series_key(c["title"])
+        if key not in groups:
+            groups[key] = [series_title(c["title"]), []]
+        groups[key][1].append(c)
+        # 优先使用较短的标题作为显示名，避免把卷号带到系列标题里。
+        groups[key][0] = min(groups[key][0], series_title(c["title"]), key=len)
+    return {key: (value[0], value[1]) for key, value in groups.items()}
+
+
+def find_series(sid):
+    for key, (title, items) in series_groups().items():
+        if series_id(title) == sid:
+            return title, items
+    return None, None
+
+
+def book_order(name):
+    """提取分本顺序：数字卷号优先，其次前/中/后篇。"""
+    s = unicodedata.normalize("NFKC", name)
+    m = re.search(r"(?:[#＃]|第|vol\.?|volume|part)?\s*(\d+(?:\.\d+)?)\s*(?:[话話章回])?(?:\s*(?:前|中|后|後)[編篇])?\s*$", s, re.I)
+    if m:
+        return (0, float(m.group(1)), s.casefold())
+    for number, marker in enumerate(("前編", "前篇", "中編", "中篇", "後編", "后編", "後篇", "后篇"), 1):
+        if s.endswith(marker):
+            return (1, number, s.casefold())
+    return (2, 0, s.casefold())
+
+
+def scan_comics():
+    """扫描 downloads 下所有本子；分本保持独立显示。"""
+    comics = []
+    for item in local_comics():
+        chapters = chapter_dirs(item["dir"])
         cover = None
-        first = os.path.join(d, chapters[0], "pages")
-        if os.path.isdir(first):
-            files = sorted(os.listdir(first))
+        if chapters:
+            files = sorted(os.listdir(os.path.join(item["dir"], chapters[0], "pages")))
             if files:
-                cover = f"/downloads/{cid}/{chapters[0]}/pages/{files[0]}"
+                cover = f"/downloads/{item['id']}/{chapters[0]}/pages/{files[0]}"
         total = 0
-        for ch_name in chapters:
-            pages_dir = os.path.join(d, ch_name, "pages")
-            if os.path.isdir(pages_dir):
-                total += len([f for f in os.listdir(pages_dir)
-                             if f.lower().endswith((".jpg",".jpeg",".png",".webp",".gif"))])
-        comics.append({
-            "id": cid,
-            "title": comic_title(cid),
-            "cover": cover,
-            "chapterCount": len(chapters),
-            "totalPages": total,
-        })
-    comics.sort(key=lambda c: c["title"])
-    return comics
+        for ch in chapters:
+            pd = os.path.join(item["dir"], ch, "pages")
+            total += len([f for f in os.listdir(pd) if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))])
+        comics.append({"id": item["id"], "title": item["title"], "cover": cover,
+                       "chapterCount": len(chapters), "totalPages": total})
+    return sorted(comics, key=lambda c: int(c["id"]) if str(c["id"]).isdigit() else str(c["id"]), reverse=True)
+
+
+def one_comic_detail(cid):
+    d = os.path.join(DOWNLOADS, cid)
+    if not os.path.isdir(d): return None
+    chapters = []
+    for item in chapter_dirs(d):
+        pages = os.path.join(d, item, "pages")
+        files = sorted(f for f in os.listdir(pages) if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")))
+        if files:
+            chapters.append({"dir": item, "sourceId": cid, "number": chapter_number(item), "title": chapter_title(item), "pages": len(files), "files": files})
+    return {"id": cid, "title": comic_title(cid), "chapters": chapters, "chapterCount": len(chapters), "volumeCount": 1,
+            "sourceUrl": SOURCE_COMIC_URL.format(comic_id=urllib.parse.quote(str(cid)))}
 
 
 def comic_detail(cid):
-    """返回单部漫画详情"""
-    d = os.path.join(DOWNLOADS, cid)
-    if not os.path.isdir(d):
+    """返回单本详情，并附上同系列前一本/后一本。"""
+    detail = one_comic_detail(cid)
+    if not detail:
         return None
-    chapters = []
-    for item in sorted(os.listdir(d)):
-        pages = os.path.join(d, item, "pages")
-        if not os.path.isdir(pages):
-            continue
-        files = sorted(f for f in os.listdir(pages)
-                       if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")))
-        if not files:
-            continue
-        title = re.sub(r"^\d+_", "", item) or item
-        chapters.append({
-            "dir": item, "title": title,
-            "pages": len(files), "files": files,
-        })
-    return {
-        "id": cid,
-        "title": comic_title(cid),
-        "chapters": chapters,
-        "chapterCount": len(chapters),
-    }
+    siblings = [c for c in local_comics() if series_key(c["title"]) == series_key(detail["title"])]
+    siblings.sort(key=lambda c: book_order(c["title"]))
+    pos = next((i for i, c in enumerate(siblings) if c["id"] == cid), -1)
+    if pos > 0:
+        detail["previousBook"] = {"id": siblings[pos - 1]["id"], "title": siblings[pos - 1]["title"]}
+    if 0 <= pos < len(siblings) - 1:
+        detail["nextBook"] = {"id": siblings[pos + 1]["id"], "title": siblings[pos + 1]["title"]}
+    detail["seriesCount"] = len(siblings)
+    return detail
 
 
 class Handler(SimpleHTTPRequestHandler):

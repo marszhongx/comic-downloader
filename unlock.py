@@ -102,7 +102,7 @@ def comic_meta_path(out_root, comic_id):
     return os.path.join(out_root, str(comic_id), META_FILE)
 
 
-SKIP_TAGS = {"贫乳", "cosplay"}  # 默认跳过含这些标签的漫画, 可用 --skip-tags 覆盖
+SKIP_TAGS = {"贫乳", "cosplay", "百合"}  # 默认跳过含这些标签的漫画, 可用 --skip-tags 覆盖
 MAX_AGE_DAYS = 365  # 只下载最近 N 天内更新过的漫画, 可用 --max-age-days 覆盖, 0 表示不过滤
 
 

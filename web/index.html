@@ -19,22 +19,31 @@
   .card:hover .btn-del,.btn-del:focus-visible{opacity:1}
   .btn-del:hover{background:#dc3545;color:#fff}
   @media (hover:none){.btn-del{opacity:.7}}  /* 触屏设备常显 */
+  .pick{
+    z-index:5;display:inline-flex;align-items:center;justify-content:center;
+    width:26px;height:26px;border:2px solid rgba(255,255,255,.8);border-radius:50%;
+    background:rgba(0,0,0,.55);color:transparent;
+    transition:background .15s ease,border-color .15s ease,color .15s ease;
+  }
+  .pick-on{background:#0d6efd;border-color:#0d6efd;color:#fff}
+  .card-sel{border-color:#0d6efd!important;box-shadow:0 0 0 .18rem rgba(13,110,253,.35)}
 </style>
 </head>
 <body>
 
 <div x-data>
-  <div x-show="$store.app.page==='library'" x-data="library()">
+  <div x-data="library()">
   <nav class="navbar sticky-top bg-body-tertiary border-bottom">
     <div class="container-fluid">
       <a class="navbar-brand py-0" href="#">📖 本地漫画</a>
       <div class="d-flex align-items-center gap-2 flex-grow-1 mx-2" style="max-width:400px">
         <input class="form-control form-control-sm" x-model="search" type="search" placeholder="搜索标题 / ID…" autocomplete="off">
       </div>
-      <span class="text-body-secondary small" x-text="`${LIB.length} 部 · ${totalPages} 页`"></span>
+      <button class="btn btn-sm btn-outline-secondary me-2 text-nowrap" x-show="!selectMode" @click="selectMode=true">批量管理</button>
+      <span class="text-body-secondary small text-nowrap" x-text="`${LIB.length} 部 · ${totalPages} 页`"></span>
     </div>
   </nav>
-  <main class="container-fluid py-3">
+  <main class="container-fluid py-3" :style="selectMode?'padding-bottom:88px':''">
     <template x-if="filtered.length === 0">
       <div class="text-center py-5 text-body-secondary">
         <div style="font-size:48px">🔍</div>
@@ -43,10 +52,15 @@
     </template>
     <div class="row row-cols-1 row-cols-sm-2 row-cols-md-3 row-cols-lg-4 g-3">
       <template x-for="c in filtered" :key="c.id">
-        <div class="col" style="cursor:pointer" @click="open(c.id)">
-          <div class="card h-100 border-secondary">
+        <div class="col" style="cursor:pointer" @click="cardClick(c)">
+          <div class="card h-100 border-secondary" :class="{'card-sel':selectMode&&isSelected(c.id)}">
             <div class="position-relative">
               <img :src="coverUrl(c)" loading="lazy" width="300" height="424" class="w-100 object-fit-contain bg-dark" alt="" style="aspect-ratio:1/1.41">
+              <span class="pick position-absolute top-0 start-0 m-1" x-show="selectMode" :class="{'pick-on':isSelected(c.id)}" aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M12.736 3.97a.733.733 0 0 1 1.047 0c.286.289.29.756.01 1.05L7.88 12.01a.733.733 0 0 1-1.065.02L3.217 8.384a.757.757 0 0 1 0-1.06.733.733 0 0 1 1.047 0l3.052 3.093 5.4-6.425z"/>
+                </svg>
+              </span>
               <div class="position-absolute bottom-0 start-0 end-0 p-2 text-white"
                    style="background:rgba(0,0,0,.72)">
                 <div class="fw-semibold" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden" x-text="c.title"></div>
@@ -56,6 +70,7 @@
                 </div>
               </div>
               <button class="btn-del position-absolute top-0 end-0 m-1"
+                      x-show="!selectMode"
                       title="删除本子"
                       aria-label="删除本子"
                       @click.stop="remove(c)">
@@ -70,11 +85,23 @@
       </template>
     </div>
   </main>
+
+  <div x-show.important="selectMode" x-cloak
+       class="position-fixed bottom-0 start-50 translate-middle-x mb-3 px-3 py-2 rounded-pill border border-secondary bg-body shadow d-flex align-items-center justify-content-center flex-wrap gap-2"
+       style="z-index:1055;max-width:calc(100% - 1rem)">
+    <span class="small text-nowrap" x-text="'已选 '+selected.length+' 部'"></span>
+    <button class="btn btn-sm btn-outline-secondary text-nowrap" :disabled="deleting||filtered.length===0"
+            @click="toggleAll()" x-text="allSelected?'取消全选':'全选'"></button>
+    <button class="btn btn-sm btn-danger text-nowrap" :disabled="deleting||!selected.length"
+            @click="removeSelected()" x-text="deleting?'删除中 '+delDone+'/'+delTotal:'删除选中'"></button>
+    <button class="btn btn-sm btn-outline-secondary" :disabled="deleting" @click="exitSelect()">取消</button>
+  </div>
   </div>
 
-  <div x-show="$store.app.page==='reader'" x-data="reader()"
-       @keydown.window="onKey"
-       class="vh-100 d-flex flex-column">
+  <template x-if="$store.app.readerOpen">
+  <div x-data="reader()" @keydown.window="onKey"
+       class="position-fixed top-0 start-0 w-100 h-100 d-flex flex-column bg-body"
+       style="z-index:1060">
     <nav class="navbar bg-body-tertiary border-bottom flex-shrink-0 px-2 py-1">
       <div class="d-flex align-items-center gap-2 w-100">
         <button class="btn btn-sm btn-outline-secondary border-0" @click="back()" title="返回书库 · Esc">←</button>
@@ -93,6 +120,15 @@
           <button class="btn btn-sm btn-outline-secondary" @click="showHelp=!showHelp"
                   title="快捷键：← ↑ 上一页 · → ↓ Space 下一页 · Home/End 首尾页 · Esc 返回书库"
                   aria-label="查看快捷键：左/上键上一页，右/下键或空格下一页，Home/End跳转首尾页，Esc返回书库">⌨</button>
+          <a class="btn btn-sm btn-outline-secondary text-nowrap" :href="sourceUrl" x-show="sourceUrl"
+             target="_blank" rel="noopener" title="在原站点打开原文（新标签页）">原文</a>
+          <button class="btn btn-sm btn-outline-danger" @click="removeComic()" :disabled="!comic||deletingComic"
+                  title="删除本子并关闭" aria-label="删除本子并关闭">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/>
+              <path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059zM11 2V1H5v1z"/>
+            </svg>
+          </button>
         </div>
       </div>
     </nav>
@@ -127,6 +163,19 @@
          style="z-index:1055" x-text="statusMsg"></div>
 
   </div>
+  </template>
+
+  <div x-show.important="$store.dlg.open" x-cloak role="dialog" aria-modal="true"
+       class="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center p-3"
+       style="z-index:1070;background:rgba(0,0,0,.5)" @click.self="$store.dlg.cancel()">
+    <div class="bg-body border border-secondary rounded shadow p-3" style="min-width:280px;max-width:420px">
+      <div class="mb-3" x-text="$store.dlg.msg"></div>
+      <div class="d-flex gap-2 justify-content-end">
+        <button class="btn btn-sm btn-outline-secondary" @click="$store.dlg.cancel()">取消</button>
+        <button class="btn btn-sm btn-danger" @click="$store.dlg.ok()">删除</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -138,13 +187,29 @@ function imgUrl(cid,ch,file){
 }
 
 document.addEventListener('alpine:init',()=>{
-  Alpine.store('app',{ page:'library', comic:null });
+  const comicId = new URLSearchParams(window.location.search).get('comic');
+  Alpine.store('app',{ readerOpen:!!comicId, comic:null, deletedTick:0 });
+  Alpine.store('dlg',{
+    open:false, msg:'', _resolve:null,
+    ask(msg){
+      if(this.open)return Promise.resolve(false);
+      this.msg=msg;this.open=true;
+      return new Promise(r=>{this._resolve=r});
+    },
+    ok(){if(!this.open)return;this.open=false;this._resolve(true);this._resolve=null},
+    cancel(){if(!this.open)return;this.open=false;this._resolve(false);this._resolve=null},
+  });
 
   Alpine.data('library',()=>({
     search:'', LIB:[], totalPages:0,
+    selectMode:false, selected:[], deleting:false, delDone:0, delTotal:0,
     async init(){
+      this.$watch('$store.app.deletedTick',()=>this.reload());
+      await this.reload();
+    },
+    async reload(){
       try{const d=await api('/api/comics');this.LIB=d.comics||[];this.totalPages=this.LIB.reduce((a,c)=>a+c.totalPages,0)}
-      catch(e){this.LIB=[]}
+      catch(e){this.LIB=[];this.totalPages=0}
     },
     get filtered(){
       const kw=this.search.trim().toLowerCase();
@@ -152,8 +217,36 @@ document.addEventListener('alpine:init',()=>{
     },
     coverUrl(c){return c.cover?encodeURI(c.cover):'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=='},
     badge(c){return c.chapterCount+'章'},
+
+    isSelected(id){return this.selected.includes(id)},
+    toggleSelect(id){
+      const i=this.selected.indexOf(id);
+      if(i<0)this.selected.push(id);else this.selected.splice(i,1);
+    },
+    get allSelected(){return this.filtered.length>0&&this.filtered.every(c=>this.selected.includes(c.id))},
+    toggleAll(){
+      if(this.allSelected){
+        const shown=new Set(this.filtered.map(c=>c.id));
+        this.selected=this.selected.filter(id=>!shown.has(id));
+      }else{
+        const next=new Set(this.selected);
+        this.filtered.forEach(c=>next.add(c.id));
+        this.selected=[...next];
+      }
+    },
+    exitSelect(){this.selectMode=false;this.selected=[]},
+
+    async cardClick(c){
+      if(this.selectMode){this.toggleSelect(c.id);return}
+      try{
+        const d=await api('/api/comic/'+encodeURIComponent(c.id));
+        this.$store.app.comic=d.comic;
+        this.$store.app.readerOpen=true;
+      }catch(e){alert('本子加载失败: '+e.message)}
+    },
+
     async remove(c){
-      if(!confirm(`确定删除「${c.title}」吗？删除后重新下载时会跳过。`))return;
+      if(!await this.$store.dlg.ask(`确定删除「${c.title}」吗？删除后重新下载时会跳过。`))return;
       try{
         const r=await fetch('/api/comic/'+encodeURIComponent(c.id),{method:'DELETE'});
         const d=await r.json();
@@ -162,27 +255,55 @@ document.addEventListener('alpine:init',()=>{
         this.totalPages=this.LIB.reduce((a,x)=>a+x.totalPages,0);
       }catch(e){alert('删除失败: '+e.message)}
     },
-    async open(id){
-      try{const d=await api('/api/comic/'+encodeURIComponent(id));this.$store.app.page='reader';this.$store.app.comic=d.comic}
-      catch(e){}
+
+    async removeSelected(){
+      const ids=this.selected.slice();
+      if(!ids.length||this.deleting)return;
+      if(!await this.$store.dlg.ask(`确定删除选中的 ${ids.length} 部漫画吗？删除后重新下载时会跳过。`))return;
+      this.deleting=true;this.delDone=0;this.delTotal=ids.length;
+      const failed=[];
+      for(const id of ids){
+        try{
+          const r=await fetch('/api/comic/'+encodeURIComponent(id),{method:'DELETE'});
+          const d=await r.json();
+          if(!r.ok||!d.ok)throw new Error(d.error||`HTTP ${r.status}`);
+          this.LIB=this.LIB.filter(x=>x.id!==id);
+          this.selected=this.selected.filter(x=>x!==id);
+        }catch(e){failed.push(id)}
+        this.delDone++;
+      }
+      this.totalPages=this.LIB.reduce((a,x)=>a+x.totalPages,0);
+      this.deleting=false;
+      if(!this.selected.length)this.selectMode=false;
+      if(failed.length)alert(`${failed.length} 部删除失败：${failed.join('、')}`);
     },
   }));
 
   Alpine.data('reader',()=>({
     chapIdx:0, page:0, pages:[],
     showStatus:false, statusMsg:'', statusTimer:null, showHelp:false,
+    deletingComic:false,
 
     get comic(){return this.$store.app.comic},
+    get sourceUrl(){return this.comic?.sourceUrl||''},
     get chapterLabel(){
       const ch=this.comic?.chapters[this.chapIdx];
       return ch?`${ch.number ? '第'+ch.number+'话 · ' : ''}${this.chapIdx+1}/${this.comic.chapters.length}章 · ${ch.pages}页`:'';
     },
 
-    init(){this.$watch('$store.app.comic',c=>{if(c)this.$nextTick(()=>this.initReader())})},
+    async init(){
+      this.$watch('$store.app.comic',c=>{if(c)this.initReader()});
+      if(this.$store.app.comic){this.initReader();return}
+      if(!comicId)return;
+      try{
+        const d=await api('/api/comic/'+encodeURIComponent(comicId));
+        this.$store.app.comic=d.comic;
+      }catch(e){this.status('本子加载失败')}
+    },
     initReader(){
       if(!this.comic)return;
       this.chapIdx=0;this.page=0;this.pages=[];
-      this.$nextTick(()=>this.loadChapter());
+      this.loadChapter();
     },
 
     loadChapter(){
@@ -190,6 +311,7 @@ document.addEventListener('alpine:init',()=>{
       const ch=this.comic.chapters[this.chapIdx];if(!ch)return;
       this.page=0;
       this.pages=ch.files.map(f=>({url:imgUrl(this.comic.id,ch,f)}));
+      const b=this.$refs.body;if(b)b.scrollTop=0;
     },
 
     goToPage(p,snap){
@@ -228,7 +350,8 @@ document.addEventListener('alpine:init',()=>{
     status(msg,ms=800){this.statusMsg=msg;this.showStatus=true;clearTimeout(this.statusTimer);this.statusTimer=setTimeout(()=>{this.showStatus=false},ms)},
 
     onKey(e){
-      if(this.$store.app.page!=='reader')return;
+      if(this.$store.dlg.open)return;
+      if(!this.$store.app.readerOpen)return;
       switch(e.key){
         case 'ArrowRight':case 'ArrowDown':case ' ':this.next();e.preventDefault();break;
         case 'ArrowLeft':case 'ArrowUp':this.prev();e.preventDefault();break;
@@ -240,8 +363,27 @@ document.addEventListener('alpine:init',()=>{
       }
     },
 
+    async removeComic(){
+      const c=this.comic;
+      if(!c||this.deletingComic)return;
+      if(!await this.$store.dlg.ask(`确定删除「${c.title}」吗？删除后将关闭弹窗，重新下载时会跳过。`))return;
+      this.deletingComic=true;
+      try{
+        const r=await fetch('/api/comic/'+encodeURIComponent(c.id),{method:'DELETE'});
+        const d=await r.json();
+        if(!r.ok||!d.ok)throw new Error(d.error||`HTTP ${r.status}`);
+        this.$store.app.deletedTick++;
+        this.back();
+      }catch(e){
+        this.status('删除失败: '+e.message);
+      }finally{
+        this.deletingComic=false;
+      }
+    },
+
     back(){
-      this.$store.app.page='library';
+      this.$store.app.readerOpen=false;
+      history.replaceState(null,'',location.pathname);
     }
   }));
 });
